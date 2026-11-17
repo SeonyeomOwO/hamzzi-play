@@ -35,8 +35,6 @@
   @keyframes breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.05,.97)}}
   #launch{position:absolute;right:16px;bottom:12px;display:flex;flex-direction:column;gap:6px;align-items:stretch}   /* bottom-right: 수확 출발 */
   #startBtn{width:200px;padding:8px 12px;font-size:15px}
-  /* the 기록 tab's test buttons under the board */
-  #actions{position:absolute;left:430px;bottom:8px;transform:translateX(-50%);display:flex;gap:8px}
   #endRun{position:absolute;right:12px;bottom:12px}
   #skipBtn{position:absolute;right:12px;top:12px}
   .hidden{display:none!important}
@@ -52,18 +50,12 @@
       <button data-tab="box">해바라기 화분</button>
       <button data-tab="relic">유물</button>
       <button data-tab="settings">환경 설정</button>
-      <button data-tab="stats">기록</button>
     </div>
     <div id="corner">
       <div id="seedCount" title="가지고 있는 해바라기씨"><span class="seedIco"></span><span id="seedNum">0</span></div>
     </div>
     <div id="launch">
       <button id="startBtn" class="go">수확 출발</button>
-    </div>
-    <div id="actions">
-      <button id="cheatBtn">테스트: 해바라기씨 x10</button>
-      <button id="testBtn">테스트: 부품 전부 + 씨앗 500</button>
-      <button id="dropTestBtn">테스트: 물방울 x10</button>
     </div>
     <button id="endRun">집으로 돌아가기</button>
     <button id="skipBtn">건너뛰기</button>
@@ -1111,9 +1103,10 @@ function updateRun(dt) {
   run.cells = run.cells.filter(c => !c.got);
 }
 function finishRun() {
-  run.ores.forEach((c, i) => save.pending[i] += c);
+  const bk = run.banked;   // (seeds and drops already banked when the page was hidden are not counted twice)
+  run.ores.forEach((c, i) => save.pending[i] += c - (bk ? bk.ores[i] : 0));
   const total = run.ores.reduce((a, b) => a + b, 0);
-  save.keys += run.keys;
+  save.keys += run.keys - (bk ? bk.keys : 0);
   save.buffs = save.buffs.map(b => ({ ...b, left: b.left - 1 })).filter(b => b.left > 0);   // each buff lasts BUFF_RUNS harvests
   save.stats.runs++; save.stats.ores += total;
   save.last = { grades: run.grades.slice(), fields: run.fieldsCleared, got: total, keys: run.keys, broke: run.hull <= 0, lost: run.lost || 0 };
@@ -1130,6 +1123,22 @@ function finishRun() {
   scene = 'hub'; tab = 'plinko';
   updateUI();
 }
+// Leaving the page (closing the tab, switching apps on a phone, reloading) must not lose anything: seeds still bouncing
+// in the plinko are paid out at the average jar, and what this harvest has picked up so far is banked into the save.
+// If the player comes back to the same harvest, finishRun only adds what was picked up after the bank.
+function bankRun() {
+  if (!run) return;
+  const b = run.banked || (run.banked = { ores: run.ores.map(() => 0), keys: 0 });
+  run.ores.forEach((c, i) => { save.pending[i] += c - b.ores[i]; b.ores[i] = c; });
+  save.keys += run.keys - b.keys; b.keys = run.keys;
+}
+function onPageHide() {
+  if (NO_SAVE) return;
+  if (plinko.balls.length) flushPlinko();
+  bankRun(); persist();
+}
+addEventListener('pagehide', onPageHide);
+document.addEventListener('visibilitychange', () => { if (document.hidden) onPageHide(); });
 
 // =====================================================================
 // PINBALL — 씨앗 정산 (햄찌 핀볼)
@@ -1762,9 +1771,6 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
 $('startBtn').onclick = () => { sfx('ui'); if (save.tut === 6) { save.tut = 0; persist(); } startRun(save.unlocked); };   // (step 6: the tutorial ends here)   // no field picking: always the furthest field reached
 $('endRun').onclick = () => { if (run && !run.over) { run.over = true; run.overT = 0.6; run.banner = { s: '집으로!', t: 0.6 }; } };
 $('skipBtn').onclick = () => { prologueStep = PROLOGUE.length - 1; nextPrologue(); };
-$('cheatBtn').onclick = () => { save.credits = Math.max(1000, save.credits * 10); persist(); };
-$('testBtn').onclick = () => { testSetup(); tab = 'plinko'; tabT = 0; updateUI(); };
-$('dropTestBtn').onclick = () => { save.keys += 10; persist(); updateUI(); };   // test helper: +10 water drops per click (stays on 기록 so it can be pressed again)
 // 진행 초기화 (the 환경 설정 tab: two clicks — no confirm() dialog, embedded browsers can suppress it)
 function resetProgress() {
   save = fresh(); run = null; cardShow = null; plinko.balls = []; plinko.parts = []; silo.n = 0; silo.drops = [];
@@ -1778,15 +1784,15 @@ const show = (id, on) => $(id).classList.toggle('hidden', !on);
 function setText(id, s) { const e = $(id); if (e.textContent !== s) e.textContent = s; }
 function updateUI() {
   const hub = scene === 'hub';
-  show('tabs', hub); show('corner', hub); show('launch', hub); show('actions', hub && tab === 'stats');   // (no settle button: the spring fires the seeds; the row only holds the 기록-tab tools)
+  show('tabs', hub); show('corner', hub); show('launch', hub);
   if (!(hub && tab === 'plinko')) { PLUNGER.holding = false; PLUNGER.charge = 0; }
   show('endRun', scene === 'run' && !(run && run.tut)); show('skipBtn', scene === 'prologue');
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
-  for (const id of ['cheatBtn', 'testBtn', 'dropTestBtn']) show(id, tab === 'stats');   // (test tools only: 기록 will be removed later)
   refreshUI();
 }
 function refreshUI() {
   if (scene === 'hub') setText('seedNum', `${fmt(save.credits)}`);   // sunflower seeds (the currency) you have now
+  if (scene === 'hub') { const hide = !!cardShow; if ($('launch').classList.contains('hidden') !== hide) show('launch', !hide); }   // (no leaving for a harvest while choosing a petal)
 }
 
 // =====================================================================
@@ -2828,14 +2834,6 @@ function jarLabelK(i, now) {
 }
 const jarSpot = i => [PB.x0 + i * BIN_W + BIN_W / 2, PB.binY + 24];
 const centroid = pts => [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length];
-// test helper (기록 tab button): install every pinball part (at least Lv1, they pop in) and fill the tube to 500 seeds
-function testSetup() {
-  for (const k of PEG_KEYS) if (plv(k) < 1) { save.parts[k] = 1; PART_NEW[k] = true; }
-  if (plv('peg') < 2) { save.parts.peg = 2; PART_NEW.peg2 = true; }   // both pin rows
-  const want = 500, mix = [0.6, 0.25, 0.1, 0.05], add = want - pendingTotal();
-  if (add > 0) { let left = add; mix.forEach((f, i) => { if (i < SEEDS.length) { const n = i === mix.length - 1 ? left : Math.round(add * f); save.pending[i] += n; left -= n; } }); }
-  persist();
-}
 function startPartPops() {   // called while the table is showing: queue a petal flight for every pending change
   const items = [
     ...Object.keys(PART_NEW).map(id => ({ kind: 'new', id })),
@@ -3609,8 +3607,18 @@ const SETTING_ROWS = [
   { id: 'sfx', label: '효과음', vol: 'sfxVol', get: () => SETTINGS.sfxOn, set: v => { SETTINGS.sfxOn = v; saveSettings(); applyVolumes(); } },
   { id: 'shake', label: '화면 흔들림', get: () => SETTINGS.shake, set: v => { SETTINGS.shake = v; saveSettings(); } },
   { id: 'fx', label: '화려한 효과', get: () => SETTINGS.fx, set: v => { SETTINGS.fx = v; saveSettings(); } },
-  { id: 'full', label: '전체 화면', get: () => !!document.fullscreenElement, set: v => { try { if (v) document.documentElement.requestFullscreen(); else document.exitFullscreen(); } catch (e) { } } },
+  { id: 'full', label: '전체 화면', get: () => !!(document.fullscreenElement || document.webkitFullscreenElement), set: v => setFullscreen(v) },
 ];
+// fullscreen differs per browser (webkit prefix on older Safari, none at all on iPhone) and returns a promise that may
+// be refused: try it quietly, never leave an unhandled rejection behind
+function setFullscreen(on) {
+  const el = document.documentElement, d = document;
+  try {
+    const p = on ? (el.requestFullscreen || el.webkitRequestFullscreen || (() => null)).call(el)
+                 : (d.exitFullscreen || d.webkitExitFullscreen || (() => null)).call(d);
+    if (p && p.catch) p.catch(() => { });
+  } catch (e) { }
+}
 function pillBtn(x, y, w, h, label, fn, color, dx = 0, size = 15) {
   btns.push({ x, y, w, h, fn });
   const hov = mouse.x >= x && mouse.x <= x + w && mouse.y >= y && mouse.y <= y + h, s = hov ? (mouse.down ? 0.92 : 1.06) : 1;
@@ -3700,23 +3708,6 @@ function drawSettings(opt = {}) {
   }, armed ? '#ff7a6a' : '#e8c9a0', armed ? Math.sin(now * 40) * 3 : 0);
   ctx.restore();
   ctx.restore();
-}
-function drawStats() {
-  const st = stats(), lines = [
-    `수확 ${save.stats.runs}회 · 수확한 해바라기 ${fmt(save.stats.kills)} · 황금 해바라기 ${save.stats.golden} · 피운 꽃 ${save.stats.boxes}`,
-    `모은 씨앗 ${fmt(save.stats.ores)} · 누적 ${CUR} ${fmt(save.stats.earned)} · 도달한 들판 ${save.unlocked + 1}`, '',
-    `밟기 수확 대미지 ${fmt(st.dmg * st.header)} (기본 ${fmt(st.dmg)} x${st.header.toFixed(1)}) · 수확 간격 ${st.tick.toFixed(2)}s · 헤더 폭 ${st.reach.toFixed(0)} · 충격파 ${(st.shock * 100).toFixed(0)}% · 치명타 ${(st.critC * 100).toFixed(0)}% x${st.critD.toFixed(1)}`,
-    `꿀벌 ${st.mis}마리/${st.misCd.toFixed(2)}s · 회전 탈곡기 Lv${st.las} 반경 ${st.lasR.toFixed(0)}/${st.lasCd.toFixed(2)}s · 조수 ${st.drone}`,
-    `탈곡 롤러 Lv${st.roller} 폭 ${st.rollerW.toFixed(0)} · 두더지 Lv${st.mole}/${st.moleCd.toFixed(1)}s · 비구름 Lv${st.cloud} 번개 ${st.cloudN + 1}번 튐 · 바람개비 회오리 Lv${st.tornado} 반경 ${st.tornadoR.toFixed(0)}`,
-    `연료 ${st.fuel}s (소모 x${st.drain.toFixed(2)}) · 이동 ${st.speed.toFixed(0)} · 흡입 ${st.mag} · 해바라기 ${st.ast}송이 · 내구도 ${st.hull} · 범퍼 ${(st.bumper * 100).toFixed(0)}%`,
-    `물방울 확률 ${(st.keyChance * 100).toFixed(2)}% · 구역 운 Lv${st.zoneLuck} · 워프 연료 ${(st.warpFuel * 100).toFixed(0)}% · 워프 수리 ${st.repair} · 가진 물방울 ${save.keys}`,
-    `씨앗 가치 x${st.oreV.toFixed(2)} · 항아리 배율 x${st.binP.toFixed(2)} · 쌍둥이 ${(st.split * 100).toFixed(0)}% · 반짝 씨앗 ${(st.goldBall * 100).toFixed(0)}%`,
-    `황금 해바라기 ${(st.golden * 100).toFixed(1)}% · 보물 바구니 ${(st.boxDrop * 100).toFixed(1)}% · 볼주머니 이자 ${(st.interest * 100).toFixed(0)}% · 억센 해바라기 칼날 효율 ${(st.armorPen * 100).toFixed(0)}%`,
-  ];
-  lines.forEach((l, i) => {   // each line slides in from the left, one after another, with an overshoot
-    const k = popIn(tabT, i * 0.05, 0.4); if (k <= 0) return;
-    ctx.globalAlpha = clamp(k, 0, 1); txt(l, 146 - (1 - k) * 80, 100 + i * 30, 12, '#fff6e8'); ctx.globalAlpha = 1;
-  });
 }
 // =====================================================================
 // TUTORIAL — the first-time flow after 새 게임. save.tut holds the step (it survives quitting, so 이어하기 resumes it):
@@ -4014,6 +4005,10 @@ let last = performance.now();
 // The loop never dies: the next frame is booked first, and an error in one frame is logged (console + a small note in
 // the corner for testers to screenshot) instead of freezing the game.
 const ERR = { msg: '', t: 0, seen: new Set() };
+// errors outside the frame (button handlers, promises) get the same corner note
+const noteErr = m => { if (!ERR.seen.has(m)) { ERR.seen.add(m); console.error('[햄찌 콤바인]', m); } ERR.msg = m; ERR.t = performance.now(); };
+addEventListener('error', e => noteErr((e.error && e.error.name ? e.error.name + ': ' : '') + (e.message || 'error')));
+addEventListener('unhandledrejection', e => noteErr('Promise: ' + ((e.reason && e.reason.message) || e.reason)));
 function frame(now) {
   requestAnimationFrame(frame);
   try { frameBody(now); } catch (e) {
@@ -4041,7 +4036,7 @@ function frameBody(now) {
     ctx.save(); ctx.globalAlpha = clamp(tabT / 0.15, 0, 1);
     ctx.translate((1 - k) * 90 + 545, 290); ctx.scale(sx * (0.94 + 0.06 * k), sy * (0.94 + 0.06 * k)); ctx.translate(-545, -290);
     if (tab === 'plinko') drawPlinko(); else if (tab === 'tree') drawTree(); else if (tab === 'box') drawBoxes(dt);
-    else if (tab === 'relic') drawRelics(); else if (tab === 'settings') drawSettings(); else drawStats();
+    else if (tab === 'relic') drawRelics(); else drawSettings();
     ctx.restore(); ctx.globalAlpha = 1;
     updDrawUiFx(dt);
     if (cardShow) { btns = []; drawCardShow(dt); }
